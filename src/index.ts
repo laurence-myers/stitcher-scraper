@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from "path";
+import { Readable } from "stream";
 import got from 'got';
 import * as htmlParser2 from 'htmlparser2';
 
@@ -25,9 +28,9 @@ function getUrl(feed: string, userId: string, options: { count?: number; season?
     return `https://app.stitcher.com/Service/GetFeedDetailsWithEpisodes.php?mode=webApp&fid=${feed}&s=${options.offset}&id_Season=${options.season}&uid=${userId}&c=${ options.count }`;
 }
 
-function getXmlStream(userId: string) {
+function getXmlStream(feedId: string, userId: string) {
     return got.stream(getUrl(
-        feeds.ComedyBangBang,
+        feedId,
         userId,
         {
             count: 10000,
@@ -35,23 +38,49 @@ function getXmlStream(userId: string) {
     ));
 }
 
-function streamUrlsToArray(userId: string): Promise<string[]> {
+function streamUrlsToArray(inputStream: Readable): Promise<string[]> {
     return new Promise((resolve, reject) => {
-        const urls: string[] = [];
-        const parser = new htmlParser2.WritableStream({
-            onopentag(name: string, attribs: { [p: string]: string }) {
-                if (name === 'episode' && attribs['url']) {
-                    urls.push(attribs['url']);
+        try {
+            const urls: string[] = [];
+            const parser = new htmlParser2.WritableStream({
+                onopentag(name: string, attribs: { [p: string]: string }) {
+                    if (name === 'episode' && attribs['url']) {
+                        urls.push(attribs['url']);
+                    }
                 }
-            }
-        }, {
-            decodeEntities: true
-        });
+            }, {
+                decodeEntities: true
+            });
 
-        getXmlStream(userId).pipe(parser);
-        parser.on('finish', () => resolve(urls));
-        parser.on('error', (err) => reject(err));
+            inputStream.pipe(parser);
+            parser.on('finish', () => resolve(urls));
+            parser.on('error', (err) => reject(err));
+        } catch (err) {
+            reject(err);
+        }
     });
+}
+
+function streamXmlToFile(feedId: string, inputStream: Readable): Promise<void> {
+    fs.mkdirSync('feeds', { recursive: true });
+    return new Promise((resolve, reject) => {
+        try {
+            const fileStream = fs.createWriteStream(path.join('feeds', `${feedId}.xml`));
+            inputStream.pipe(fileStream);
+            fileStream.on('finish', () => resolve());
+            fileStream.on('error', (err) => reject(err));
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
+async function streamToOutputs(feedId: string, userId: string) {
+    const xmlInputStream = getXmlStream(feedId, userId);
+    const urlsP = streamUrlsToArray(xmlInputStream);
+    const feedFileP = streamXmlToFile(feedId, xmlInputStream);
+    const [urls] = await Promise.all([urlsP, feedFileP]);
+    return urls;
 }
 
 function logInAscendingOrder(urls: string[]): void {
@@ -66,7 +95,7 @@ async function main(args: string[]): Promise<ExitCode> {
         return ExitCode.InvalidArgs;
     }
     const userId = args[0];
-    const urls = await streamUrlsToArray(userId);
+    const urls = await streamToOutputs(feeds.ComedyBangBang, userId);
     logInAscendingOrder(urls);
     return ExitCode.Okay;
 }
