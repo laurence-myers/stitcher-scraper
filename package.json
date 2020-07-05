@@ -4,11 +4,13 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
+    "organise": "ts-node ./src/organise.ts",
     "start": "ts-node ./src/index.ts"
   },
   "dependencies": {
     "got": "11.3.0",
-    "htmlparser2": "4.1.0"
+    "htmlparser2": "4.1.0",
+    "node-id3": "0.1.17"
   },
   "devDependencies": {
     "@types/node": "12",

@@ -1,8 +1,10 @@
 import * as fs from 'fs';
 import * as path from "path";
 import { Readable } from "stream";
-import got from 'got';
 import * as htmlParser2 from 'htmlparser2';
+import { getXmlStreamFromServer } from "./feed";
+import { pipeline, streamIterableToFile } from "./streaming";
+import { failure, Result, success } from "./result";
 
 enum ExitCode {
     Okay,
@@ -10,93 +12,92 @@ enum ExitCode {
     InvalidArgs
 }
 
-const defaultOptions = {
-    count: 10,
-    season: -1,
-    offset: 0
-};
-
-const feeds = {
-    ComedyBangBang: '96916'
-};
-
-function getUrl(feed: string, userId: string, options: { count?: number; season?: number; offset?: number } = {}) {
-    options = {
-        ...defaultOptions,
-        ...options
-    };
-    return `https://app.stitcher.com/Service/GetFeedDetailsWithEpisodes.php?mode=webApp&fid=${feed}&s=${options.offset}&id_Season=${options.season}&uid=${userId}&c=${ options.count }`;
-}
-
-function getXmlStream(feedId: string, userId: string) {
-    return got.stream(getUrl(
-        feedId,
-        userId,
-        {
-            count: 10000,
+async function streamUrlsToArray(inputStream: Readable): Promise<string[]> {
+    const urls: string[] = [];
+    const parser = new htmlParser2.WritableStream({
+        onopentag(name: string, attribs: { [p: string]: string }) {
+            if (name === 'episode' && attribs['url']) {
+                urls.push(attribs['url']);
+            }
         }
-    ));
-}
-
-function streamUrlsToArray(inputStream: Readable): Promise<string[]> {
-    return new Promise((resolve, reject) => {
-        try {
-            const urls: string[] = [];
-            const parser = new htmlParser2.WritableStream({
-                onopentag(name: string, attribs: { [p: string]: string }) {
-                    if (name === 'episode' && attribs['url']) {
-                        urls.push(attribs['url']);
-                    }
-                }
-            }, {
-                decodeEntities: true
-            });
-
-            inputStream.pipe(parser);
-            parser.on('finish', () => resolve(urls));
-            parser.on('error', (err) => reject(err));
-        } catch (err) {
-            reject(err);
-        }
+    }, {
+        decodeEntities: true
     });
-}
 
-function streamXmlToFile(feedId: string, inputStream: Readable): Promise<void> {
-    fs.mkdirSync('feeds', { recursive: true });
-    return new Promise((resolve, reject) => {
-        try {
-            const fileStream = fs.createWriteStream(path.join('feeds', `${feedId}.xml`));
-            inputStream.pipe(fileStream);
-            fileStream.on('finish', () => resolve());
-            fileStream.on('error', (err) => reject(err));
-        } catch (err) {
-            reject(err);
-        }
-    });
-}
-
-async function streamToOutputs(feedId: string, userId: string) {
-    const xmlInputStream = getXmlStream(feedId, userId);
-    const urlsP = streamUrlsToArray(xmlInputStream);
-    const feedFileP = streamXmlToFile(feedId, xmlInputStream);
-    const [urls] = await Promise.all([urlsP, feedFileP]);
+    await pipeline(inputStream, parser);
     return urls;
 }
 
-function logInAscendingOrder(urls: string[]): void {
-    for (let i = urls.length - 1; i >= 0; i--) {
-        console.log(urls[i]);
-    }
+async function streamXmlToFile(feedId: string, inputStream: Readable): Promise<void> {
+    fs.mkdirSync('feeds', { recursive: true });
+    const fileStream = fs.createWriteStream(path.join('feeds', `${feedId}.xml`));
+    await pipeline(inputStream, fileStream);
 }
 
-async function main(args: string[]): Promise<ExitCode> {
-    if (args.length !== 1) {
-        console.error(`Please pass your Stitcher user ID as the first argument`);
+async function streamToOutputs(feedId: string, userId: string) {
+    const xmlInputStream = getXmlStreamFromServer(feedId, userId);
+    const [urls] = await Promise.all([
+        streamUrlsToArray(xmlInputStream),
+        streamXmlToFile(feedId, xmlInputStream)
+    ]);
+    return urls;
+}
+
+async function writeInAscendingOrder(feedId: string, urls: string[]): Promise<void> {
+    await streamIterableToFile(feedId + '.txt', function* () {
+        for (let i = urls.length - 1; i >= 0; i--) {
+            yield urls[i] + '\n';
+        }
+    }());
+}
+
+interface CommandLineArgs {
+    feedId: string;
+    userId: string;
+}
+
+async function parseArgs(args: string[]): Promise<Result<string, CommandLineArgs>> {
+    let feedId: string | undefined;
+    let userId: string | undefined;
+
+    for (const arg of args) {
+        if (!userId) {
+            if (!/^[0-9]+$/.test(arg)) {
+                return failure(`"${ arg }" does not look like a valid user ID.`);
+            }
+            userId = arg;
+        } else if (!feedId) {
+            if (!/^[0-9]+$/.test(arg)) {
+                return failure(`"${ arg }" does not look like a valid feed ID.`);
+            }
+            feedId = arg;
+        } else {
+            return failure(`Too many arguments. Please only pass the feed ID and the directory containing the downloaded MP3 files.`);
+        }
+    }
+
+    if (!userId) {
+        return failure(`Please pass your Stitcher user ID as the first argument.`);
+    }
+    if (!feedId) {
+        return failure(`Please pass the feed ID as the second argument.`);
+    }
+
+    return success({
+        feedId,
+        userId
+    });
+}
+
+async function main(rawArgs: string[]): Promise<ExitCode> {
+    const argsR = await parseArgs(rawArgs);
+    if (!argsR.success) {
+        console.error(argsR.error);
         return ExitCode.InvalidArgs;
     }
-    const userId = args[0];
-    const urls = await streamToOutputs(feeds.ComedyBangBang, userId);
-    logInAscendingOrder(urls);
+    const args = argsR.value;
+    const urls = await streamToOutputs(args.feedId, args.userId);
+    await writeInAscendingOrder(args.feedId, urls);
     return ExitCode.Okay;
 }
 
