@@ -1,3 +1,9 @@
+# stitcher-scraper
+
+A tool to help scrape and archive individual Stitcher podcasts.
+
+It can generate text file containing URLs for each episode's media file. Use an external download tool to download the files. Then, re-run the tool to tag an rename the files.
+
 ## Install
 
 ```bash
@@ -51,3 +57,7 @@ To find out your Stitcher user ID:
 - Log in to the Stitcher web player at https://app.stitcher.com
 - Go to https://app.stitcher.com/Service/GetSubscriptionStatus.php
 - In the `subscriptionStatus` element, look for the `uid` attribute. Its value is your user ID.
+
+## License
+
+This software is licensed under the terms of [the MIT license](./LICENSE).
